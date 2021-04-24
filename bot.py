@@ -1,137 +1,107 @@
 import telebot
 from telebot import types
-from config import *
-import sqlite3
 
+import config
+import message_patterns
+from user import User
 
-bot = telebot.TeleBot(token)
+call_or_message_actions = ('Позвонить', 'Написать в Телеграмм', 'Отменить заказ')
 
-user_dict = {}
+bot = telebot.TeleBot(config.BOT_TOKEN)
 
-PRIVATE_CARD = 'your card'
-
-cigarettes = ['LM 55 ГРН', 'BOND 60 ГРН', 'MALBORO 50 ГРН']
-
-
-class User:
-    def __init__(self, room):
-        self.room = room
-        self.cigarete = None
-        self.number = None
-        self.comm = None
+user_dict: dict[int, User] = {}
 
 
 @bot.message_handler(commands=['start', 'help'])
-def say_hello(message):
-    bot.send_message(message.chat.id, "Приветствую👋.  Для того, чтобы"
-                                      " купить сигареты, введите команду '/buy'. В течении 10 минут🕗, "
-                                      "после оплаты, сигареты"
-                                      " будут доставлены в вашу комнату.")
+def handle_command_start(message: types.Message):
+    bot.send_message(message.chat.id, message_patterns.welcome)
 
 
 @bot.message_handler(commands=['buy'])
-def send_buy(message):
-    msg = bot.send_message(message.chat.id, 'Введи свою комнату')
-    bot.register_next_step_handler(msg, process_room_step)
+def handle_command_buy(message: types.Message):
+    msg = bot.send_message(message.chat.id, message_patterns.enter_room)
+    bot.register_next_step_handler(msg, handle_room_step)
 
 
-def process_room_step(message):
-    if len(message.text) == 3:
-        chat_id = message.chat.id
-        room = message.text
-        user = User(room)
-        user_dict[chat_id] = user
-        keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, row_width=1, resize_keyboard=True)
-        lm = types.KeyboardButton(text=cigarettes[0])
-        bond = types.KeyboardButton(text=cigarettes[1])
-        malboro = types.KeyboardButton(text=cigarettes[2])
-        keyboard.add(lm, bond, malboro)
-        msg = bot.send_message(message.chat.id, 'Выберите товар', reply_markup=keyboard)
-        bot.register_next_step_handler(msg, process_ciga_step)
-    else:
-        exception(message)
+def handle_room_step(message: types.Message):
+    if not message.text.isdigit() or len(message.text) != 3:
+        bot.send_message(message.chat.id, message_patterns.enter_exception)
+        handle_command_buy(message)
+        return
+
+    user_dict[message.chat.id] = User(room=message.text)
+
+    reply_markup = types.InlineKeyboardMarkup(
+        keyboard=[
+            [types.InlineKeyboardButton(text=f'{product} {price} грн.', callback_data=product)]
+            for product, price in config.PRODUCTS.items()
+        ],
+        row_width=1
+    )
+
+    bot.send_message(message.chat.id, message_patterns.choose_product, reply_markup=reply_markup)
 
 
-def process_ciga_step(message):
-    chat_id = message.chat.id
-    cigarete = message.text
-    if cigarete in cigarettes:
-        user = user_dict[chat_id]
-        user.cigarete = cigarete
-        msg = bot.send_message(message.chat.id, 'Введи свой телефон')
-        bot.register_next_step_handler(msg, number_step)
-    else:
-        exception(message)
+@bot.callback_query_handler(func=lambda callback: callback.data in config.PRODUCTS.keys())
+def handle_product_query(callback: types.CallbackQuery):
+    user_dict[callback.message.chat.id].product = callback.data
+    bot.answer_callback_query(callback.id, message_patterns.selected_product.format(callback.data))
+    bot.delete_message(callback.message.chat.id, callback.message.id)
+
+    reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    reply_markup.add(types.KeyboardButton('Отправить номер телефона', True))
+
+    msg = bot.send_message(callback.message.chat.id, message_patterns.send_phone, reply_markup=reply_markup)
+    bot.register_next_step_handler(msg, handle_phone)
 
 
-def number_step(message):
-    chat_id = message.chat.id
-    number = message.text
-    user = user_dict[chat_id]
-    if len(number) == 13 or len(number) == 12 or len(number) == 10:
-        user.number = number
-        keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, row_width=1, resize_keyboard=True)
-        call = types.KeyboardButton(text='Позвонить')
-        write = types.KeyboardButton(text='Написать в Телеграмм')
-        back = types.KeyboardButton(text='Отменить заказ')
-        keyboard.add(call, write, back)
-        msg = bot.send_message(message.chat.id, 'Выберите удобный способ связи', reply_markup=keyboard)
-        bot.register_next_step_handler(msg, call_or_write)
-    else:
-        exception(message)
+def handle_phone(message: types.Message):
+    user_dict[message.chat.id].phone = '+' + message.contact.phone_number
+
+    reply_markup = types.InlineKeyboardMarkup(
+        keyboard=[
+            [types.InlineKeyboardButton(item, callback_data=item)]
+            for item in call_or_message_actions
+        ],
+        row_width=1
+    )
+
+    bot.send_message(message.chat.id, message_patterns.call_or_message, reply_markup=reply_markup)
 
 
-def call_or_write(message):
-    chat_id = message.chat.id
-    comm = message.text
-    user = user_dict[chat_id]
-    if comm == 'Позвонить' or comm == 'Написать в Телеграмм':
-        user.comm = comm
-        cost = 0
-        if user.cigarete == cigarettes[0]:
-            cost = str(55)
-        elif user.cigarete == cigarettes[1]:
-            cost = str(60)
-        elif user.cigarete == cigarettes[2]:
-            cost = str(50)
-        else:
-            exception(message)
-        bot.send_message(message.chat.id, 'Заказ принят. В течении 5 минут вам позвонит или напишет'
-                                          ' оператор для подтверждения заказа.'
-                                          f' После звонка оплатите {cost} ГРН')
-        bot.send_message(message.chat.id, f'PRIVATE: {PRIVATE_CARD}\nMONOBANK: {PRIVATE_CARD}')
-        database(message.chat.id, user.room, user.cigarete, user.number, user.comm)
-    elif comm == 'Отменить заказ':
-        bot.send_message(message.chat.id, 'Заказ отменен.')
-    else:
-        exception(message)
+@bot.callback_query_handler(func=lambda callback: callback.data in call_or_message_actions)
+def handle_call_or_message(callback: types.CallbackQuery):
+    bot.delete_message(callback.message.chat.id, callback.message.id)
+    if callback.data == call_or_message_actions[-1]:
+        bot.send_message(callback.message.chat.id, message_patterns.cancel_order, reply_markup=types.ReplyKeyboardRemove())
+        return
 
+    user_dict[callback.message.chat.id].call_or_message = callback.data
+    bot.answer_callback_query(callback.id, message_patterns.selected_product.format(callback.data))
+    bot.send_message(
+        chat_id=callback.message.chat.id,
+        text=message_patterns.successful_order.format(config.PRODUCTS[user_dict[callback.message.chat.id].product]),
+        reply_markup=types.ReplyKeyboardMarkup(True, True).add(types.KeyboardButton('/buy'))
+    )
 
-bot.enable_save_next_step_handlers(delay=3)
+    bot.send_message(callback.message.chat.id, f'PRIVATE: {config.PRIVATE_CARD}')
 
-bot.load_next_step_handlers()
+    bot.send_message(
+        chat_id=config.ADMIN_ID,
+        text=f'Новый заказ!\n'
+             f'ID: {callback.message.chat.id}\n'
+             f'{"Username: @{}".format(callback.from_user.username) if callback.from_user.username else ""}\n'
+             f'Комната: {user_dict[callback.message.chat.id].room}\n'
+             f'Товар: {user_dict[callback.message.chat.id].product}\n'
+             f'Цена: {config.PRODUCTS[user_dict[callback.message.chat.id].product]} грн.\n'
+             f'Номер: {user_dict[callback.message.chat.id].phone}\n'
+             f'Способ контакта: {user_dict[callback.message.chat.id].call_or_message}'
+    )
 
 
 @bot.message_handler(content_types='text')
-def all_text(message):
+def handle_other_text(message):
     bot.send_message(message.chat.id, "Не понимаю. Введите команду /buy и попытайтесь снова")
-
-
-def database(userid, room, cigaretes, number, comm):
-    conn = sqlite3.connect("orders.db")
-    cursor = conn.cursor()
-    cursor.execute("""CREATE TABLE IF NOT EXISTS orders
-                      (id TEXT, room TEXT, cigaretes TEXT, number TEXT, communication TEXT)
-                   """)
-    conn.commit()
-    cursor.execute(f"INSERT INTO orders VALUES (?, ?, ?, ?, ?)", (userid, room, cigaretes, number, comm))
-    conn.commit()
-    bot.send_message(614377323, f'Новый заказ!\nАйди: {userid}\nКомната: {room}\nСигареты: {cigaretes}\nНомер: {number}\n'
-                                f'Способ контакта: {comm}')
-
-
-def exception(message):
-    bot.send_message(message.chat.id, 'Указанные данные неверны. Введите команду /buy и попытайтесь снова')
 
 
 if __name__ == '__main__':
