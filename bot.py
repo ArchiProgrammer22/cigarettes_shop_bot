@@ -8,7 +8,7 @@ bot = telebot.TeleBot(token)
 
 user_dict = {}
 
-PRIVATE_CARD = '5168757413064025'
+PRIVATE_CARD = 'your card'
 
 cigarettes = ['LM 55 ГРН', 'BOND 60 ГРН', 'MALBORO 50 ГРН']
 
